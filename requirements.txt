@@ -8,3 +8,5 @@ scikit-learn
 matplotlib
 tensorflow-model-optimization
 joblib
+uvicorn
+fastapi

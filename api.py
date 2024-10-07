@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from test_model import get_json_predictions
 from pydantic import BaseModel
 import json
+import uvicorn
 
 app = FastAPI()
 
@@ -29,5 +30,4 @@ async def predict(request: PredictionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=7777)

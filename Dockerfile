@@ -17,4 +17,4 @@ COPY . .
 EXPOSE 7777
 
 # 运行应用
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7777"]
+CMD ["python", "api.py"]
