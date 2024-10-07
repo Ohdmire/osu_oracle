@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import zipfile
+import tensorflow as tf
 
 from keras.models import load_model
 from sklearn.preprocessing import LabelEncoder
@@ -222,7 +223,7 @@ def test_model_on_beatmap_id(beatmap_id, bagged_models, max_sequence_length, max
             
 import json
 
-def get_predictions_as_dict(beatmap_id, bagged_models, max_sequence_length, max_slider_length, max_time_diff, label_encoder_path):
+def get_predictions_as_json(beatmap_id, bagged_models, max_sequence_length, max_slider_length, max_time_diff, label_encoder_path):
     # Load the label encoder
     with open(label_encoder_path, 'rb') as f:
         label_encoder = pickle.load(f)
@@ -255,10 +256,10 @@ def get_predictions_as_dict(beatmap_id, bagged_models, max_sequence_length, max_
     beatmap_vectors = beatmap_data['vectors']
     beatmap_vectors_padded = pad_sequences([beatmap_vectors], dtype='float32', padding='post', maxlen=max_sequence_length)
 
-    # Use the average prediction of the bagged models
+    # 使用预定义的预测函数
     y_preds = []
     for model in bagged_models:
-        y_pred = model.predict(beatmap_vectors_padded, verbose = 0)
+        y_pred = predict_function(model, beatmap_vectors_padded)
         y_preds.append(y_pred)
 
     y_preds_mean = np.mean(y_preds, axis=0)
@@ -277,21 +278,21 @@ def get_predictions_as_dict(beatmap_id, bagged_models, max_sequence_length, max_
     json_predictions = {category: float(confidence) for category, confidence in sorted_predictions if confidence > 0.05}
 
     # Return the JSON object
-    return json_predictions
+    return json.dumps(json_predictions)
 
-def get_json_predictions(folders, beatmap_id):
-    models = []
-    start = time.time()
-    for folder in folders:
-        model_folder = folder + "/"
-        model_paths = [os.path.join(model_folder, f) for f in os.listdir(model_folder) if f.endswith('.h5')]
-        model = [load_model(model_path, compile=False) for model_path in model_paths]
-        models.append(model) 
-    end = time.time()
+
+def get_json_predictions(folders, beatmap_id, models=None):
+    if models is None:
+        models = []
+        for folder in folders:
+            model_folder = folder + "/"
+            model_paths = [os.path.join(model_folder, f) for f in os.listdir(model_folder) if f.endswith('.h5')]
+            model = [load_model(model_path, compile=False) for model_path in model_paths]
+            models.append(model)
+
     max_slider_length = 500.0
     max_time_diff = 1000
-    label_encoder_path = model_folder + "label_encoder.pkl"
-    print(f"Loading Time: {round(end - start, 2)}s")
+    label_encoder_path = folders[0] + "/label_encoder.pkl"
 
     # Go through each model and get the predictions as a JSON object
     json_predictions = []
@@ -300,11 +301,11 @@ def get_json_predictions(folders, beatmap_id):
         print("Model: " + folders[i])
         input_shape = model[0].input_shape
         if isinstance(input_shape, list):
-            max_sen = input_shape[0][1]
+            max_sen = input_shape[0][1]  # 对于多输入模型
         else:
-            max_sen = input_shape[1]
-        prediction_dict = get_predictions_as_dict(beatmap_id, model, max_sen, max_slider_length, max_time_diff, label_encoder_path)
-        json_predictions.append(prediction_dict)
+            max_sen = input_shape[1]  # 对于单输入模型
+        json_prediction = get_predictions_as_json(beatmap_id, model, max_sen, max_slider_length, max_time_diff, label_encoder_path)
+        json_predictions.append(json_prediction)
 
     return json_predictions
             
@@ -322,3 +323,7 @@ if __name__ == "__main__":
     else:
         beatmap_id = sys.argv[1]
         main(beatmap_id)
+
+@tf.function(reduce_retracing=True)
+def predict_function(model, inputs):
+    return model(inputs, training=False)
