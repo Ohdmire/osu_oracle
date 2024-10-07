@@ -9,20 +9,20 @@ import tempfile
 import time
 import zipfile
 
-from IPython.display import clear_output
 from keras.models import load_model
 from sklearn.preprocessing import LabelEncoder
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
+# 下载模型文件（如果不存在）
 if not os.path.exists('models'):
-  url = 'https://drive.google.com/uc?id=14zLtVPcBDyLP-Rlj-2b6-mPIqGq-JY9J'
-  output = 'models.zip'
-  gdown.download(url, output, quiet=False)
+    url = 'https://drive.google.com/uc?id=14zLtVPcBDyLP-Rlj-2b6-mPIqGq-JY9J'
+    output = 'models.zip'
+    gdown.download(url, output, quiet=False)
 
-  with zipfile.ZipFile("models.zip", 'r') as zip_ref:
-      zip_ref.extractall("models")
+    with zipfile.ZipFile("models.zip", 'r') as zip_ref:
+        zip_ref.extractall("models")
 
 def test_model(folders):
     models = []
@@ -43,7 +43,6 @@ def test_model(folders):
         print("Enter a beatmap ID to classify (or 'exit' to quit): ", end='')
         beatmap_id = input()
         print("----------------------------------------------------")
-        clear_output(wait=True)  # Clear the output
         if beatmap_id == "exit":
             break
         for i, model in enumerate(models):
@@ -223,7 +222,7 @@ def test_model_on_beatmap_id(beatmap_id, bagged_models, max_sequence_length, max
             
 import json
 
-def get_predictions_as_json(beatmap_id, bagged_models, max_sequence_length, max_slider_length, max_time_diff, label_encoder_path):
+def get_predictions_as_dict(beatmap_id, bagged_models, max_sequence_length, max_slider_length, max_time_diff, label_encoder_path):
     # Load the label encoder
     with open(label_encoder_path, 'rb') as f:
         label_encoder = pickle.load(f)
@@ -278,8 +277,7 @@ def get_predictions_as_json(beatmap_id, bagged_models, max_sequence_length, max_
     json_predictions = {category: float(confidence) for category, confidence in sorted_predictions if confidence > 0.05}
 
     # Return the JSON object
-    return json.dumps(json_predictions)
-
+    return json_predictions
 
 def get_json_predictions(folders, beatmap_id):
     models = []
@@ -300,22 +298,27 @@ def get_json_predictions(folders, beatmap_id):
     for i, model in enumerate(models):
         print("----------------------------------------------------")
         print("Model: " + folders[i])
-        config = model[0].get_config()  # Returns pretty much every information about your model
-        max_sen = config["layers"][0]["config"]["batch_input_shape"][1]  # Returns a tuple of width, height and channels
-        json_prediction = get_predictions_as_json(beatmap_id, model, max_sen, max_slider_length, max_time_diff, label_encoder_path)
-        json_predictions.append(json_prediction)
+        input_shape = model[0].input_shape
+        if isinstance(input_shape, list):
+            max_sen = input_shape[0][1]
+        else:
+            max_sen = input_shape[1]
+        prediction_dict = get_predictions_as_dict(beatmap_id, model, max_sen, max_slider_length, max_time_diff, label_encoder_path)
+        json_predictions.append(prediction_dict)
 
     return json_predictions
             
-import sys
-
 def main(beatmap_id):
-    folders = ["models"] # set this to "models"
-    get_json_predictions(folders, beatmap_id)
+    folders = ["models"]
+    json_predictions = get_json_predictions(folders, beatmap_id)
+    for i, prediction in enumerate(json_predictions):
+        print(f"Model {i+1} predictions:")
+        print(prediction)
+        print()
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python test_models.py [beatmap_id]")
+        print("Usage: python test_model.py [beatmap_id]")
     else:
         beatmap_id = sys.argv[1]
         main(beatmap_id)
