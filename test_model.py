@@ -8,6 +8,8 @@ import sys
 import tempfile
 import time
 import zipfile
+import concurrent.futures
+import threading
 
 from keras.models import load_model
 from sklearn.preprocessing import LabelEncoder
@@ -24,33 +26,44 @@ if not os.path.exists('models'):
     with zipfile.ZipFile("models.zip", 'r') as zip_ref:
         zip_ref.extractall("models")
 
-def test_model(folders):
-    models = []
-    start = time.time()
-    for folder in folders:
-      model_folder = folder + "/"
-      model_paths = [os.path.join(model_folder, f) for f in os.listdir(model_folder) if f.endswith('.h5')]
-      model = [load_model(model_path, compile=False) for model_path in model_paths]
-      models.append(model) 
-    end = time.time()
-    max_slider_length = 500.0
-    max_time_diff = 1000
-    label_encoder_path = model_folder + "label_encoder.pkl"
-    print(f"Loading Time: {round(end - start, 2)}s")
+def download_beatmap(beatmap_id):
+    url = f"https://osu.direct/api/osu/{beatmap_id}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
+    }
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        print(f"Error fetching .osu file for beatmap ID {beatmap_id}: {response.status_code}")
+        return None
+    return response.content
 
-    while True:
-        print("----------------------------------------------------")
-        print("Enter a beatmap ID to classify (or 'exit' to quit): ", end='')
-        beatmap_id = input()
-        print("----------------------------------------------------")
-        if beatmap_id == "exit":
-            break
-        for i, model in enumerate(models):
-          print("----------------------------------------------------")
-          print("Model: " + folders[i])
-          config = model[0].get_config() # Returns pretty much every information about your model
-          max_sen = config["layers"][0]["config"]["batch_input_shape"][1] # returns a tuple of width, height and channels
-          test_model_on_beatmap_id(beatmap_id, model, max_sen, max_slider_length, max_time_diff, label_encoder_path)
+def process_beatmap(beatmap_id, models, max_slider_length, max_time_diff, label_encoder_path):
+    osu_file_content = download_beatmap(beatmap_id)
+    if osu_file_content is None:
+        return None
+
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.write(osu_file_content)
+        temp_file_path = temp_file.name
+
+    beatmap_data = parse_osu_file(temp_file_path, max_slider_length, print_info=True)
+    os.unlink(temp_file_path)
+
+    if beatmap_data is None:
+        print(f"Invalid .osu file for beatmap ID {beatmap_id}")
+        return None
+
+    json_predictions = []
+    for model in models:
+        input_shape = model[0].input_shape
+        if isinstance(input_shape, list):
+            max_sen = input_shape[0][1]
+        else:
+            max_sen = input_shape[1]
+        prediction_dict = get_predictions_as_dict(beatmap_data, model, max_sen, max_slider_length, max_time_diff, label_encoder_path)
+        json_predictions.append(prediction_dict)
+
+    return json_predictions
 
 def parse_osu_file(file_path, max_slider_length = 1, max_time_diff = 1, print_info = False):
     data = {
@@ -161,95 +174,10 @@ def parse_osu_file(file_path, max_slider_length = 1, max_time_diff = 1, print_in
     data['vectors'] = vectors
     return data
 
-def test_model_on_beatmap_id(beatmap_id, bagged_models, max_sequence_length, max_slider_length, max_time_diff, label_encoder_path):
+def get_predictions_as_dict(beatmap_data, bagged_models, max_sequence_length, max_slider_length, max_time_diff, label_encoder_path):
     # Load the label encoder
     with open(label_encoder_path, 'rb') as f:
         label_encoder = pickle.load(f)
-
-    # Fetch the .osu file content from the Kitsune API
-    url = f"https://osu.direct/api/osu/{beatmap_id}"
-    headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
-    }
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        print(f"Error fetching .osu file for beatmap ID {beatmap_id}: {response.status_code}")
-        return
-
-    osu_file_content = response.content
-
-    # Save the .osu file content to a temporary file
-    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-        temp_file.write(osu_file_content)
-        temp_file_path = temp_file.name
-
-    # Parse the temporary .osu file and get the beatmap data
-    beatmap_data = parse_osu_file(temp_file_path, max_slider_length, print_info = True)
-    if beatmap_data is None:
-        print("Invalid .osu file.")
-        os.unlink(temp_file_path)  # Delete the temporary file
-        return
-
-    # Get the vectors and pad them
-    beatmap_vectors = beatmap_data['vectors']
-    #beatmap_vectors = np.delete(beatmap_vectors, 3, axis=1)
-    beatmap_vectors_padded = pad_sequences([beatmap_vectors], dtype='float32', padding='post', maxlen=max_sequence_length)
-
-
-    # Use the average prediction of the bagged models
-    y_preds = []
-    for model in bagged_models:
-        y_pred = model.predict(beatmap_vectors_padded, verbose = 0)
-        y_preds.append(y_pred)
-
-    y_preds_mean = np.mean(y_preds, axis=0)
-    y_preds_mean_numerical = np.argmax(y_preds_mean, axis=1)
-
-    # Determine the predicted category and confidence for each category
-    categories = label_encoder.inverse_transform(range(len(y_preds_mean[0])))
-    confidences = y_preds_mean[0]
-
-    # Create a list of (category, confidence) tuples
-    predictions = list(zip(categories, confidences))
-
-    # Sort the predictions by confidence in descending order
-    sorted_predictions = sorted(predictions, key=lambda x: x[1], reverse=True)
-
-    # Print the predicted categories and confidence for confidences greater than 5%
-    for category, confidence in sorted_predictions:
-        if confidence > 0.05:
-            print(f"{category} - confidence: {confidence:.2f}")
-            
-import json
-
-def get_predictions_as_dict(beatmap_id, bagged_models, max_sequence_length, max_slider_length, max_time_diff, label_encoder_path):
-    # Load the label encoder
-    with open(label_encoder_path, 'rb') as f:
-        label_encoder = pickle.load(f)
-
-    # Fetch the .osu file content from the Kitsune API
-    url = f"https://osu.direct/api/osu/{beatmap_id}"
-    headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
-    }
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        print(f"Error fetching .osu file for beatmap ID {beatmap_id}: {response.status_code}")
-        return
-
-    osu_file_content = response.content
-
-    # Save the .osu file content to a temporary file
-    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-        temp_file.write(osu_file_content)
-        temp_file_path = temp_file.name
-
-    # Parse the temporary .osu file and get the beatmap data
-    beatmap_data = parse_osu_file(temp_file_path, max_slider_length, print_info = True)
-    if beatmap_data is None:
-        print("Invalid .osu file.")
-        os.unlink(temp_file_path)  # Delete the temporary file
-        return
 
     # Get the vectors and pad them
     beatmap_vectors = beatmap_data['vectors']
@@ -258,7 +186,7 @@ def get_predictions_as_dict(beatmap_id, bagged_models, max_sequence_length, max_
     # Use the average prediction of the bagged models
     y_preds = []
     for model in bagged_models:
-        y_pred = model.predict(beatmap_vectors_padded, verbose = 0)
+        y_pred = model.predict(beatmap_vectors_padded, verbose=0)
         y_preds.append(y_pred)
 
     y_preds_mean = np.mean(y_preds, axis=0)
@@ -279,7 +207,7 @@ def get_predictions_as_dict(beatmap_id, bagged_models, max_sequence_length, max_
     # Return the JSON object
     return json_predictions
 
-def get_json_predictions(folders, beatmap_id):
+def get_json_predictions(folders, beatmap_ids):
     models = []
     start = time.time()
     for folder in folders:
@@ -293,32 +221,39 @@ def get_json_predictions(folders, beatmap_id):
     label_encoder_path = model_folder + "label_encoder.pkl"
     print(f"Loading Time: {round(end - start, 2)}s")
 
-    # Go through each model and get the predictions as a JSON object
-    json_predictions = []
-    for i, model in enumerate(models):
-        print("----------------------------------------------------")
-        print("Model: " + folders[i])
-        input_shape = model[0].input_shape
-        if isinstance(input_shape, list):
-            max_sen = input_shape[0][1]
-        else:
-            max_sen = input_shape[1]
-        prediction_dict = get_predictions_as_dict(beatmap_id, model, max_sen, max_slider_length, max_time_diff, label_encoder_path)
-        json_predictions.append(prediction_dict)
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_beatmap = {executor.submit(process_beatmap, beatmap_id, models, max_slider_length, max_time_diff, label_encoder_path): beatmap_id for beatmap_id in beatmap_ids}
+        for future in concurrent.futures.as_completed(future_to_beatmap):
+            beatmap_id = future_to_beatmap[future]
+            try:
+                json_predictions = future.result()
+                if json_predictions:
+                    results[beatmap_id] = json_predictions
+            except Exception as exc:
+                print(f"Error processing beatmap {beatmap_id}: {exc}")
 
-    return json_predictions
-            
-def main(beatmap_id):
+    return results
+
+def main(beatmap_ids):
     folders = ["models"]
-    json_predictions = get_json_predictions(folders, beatmap_id)
-    for i, prediction in enumerate(json_predictions):
-        print(f"Model {i+1} predictions:")
-        print(prediction)
+    results = get_json_predictions(folders, beatmap_ids)
+    for beatmap_id, predictions in results.items():
+        print(f"Beatmap ID: {beatmap_id}")
+        for i, prediction in enumerate(predictions):
+            print(f"Model {i+1} predictions:")
+            print(prediction)
         print()
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python test_model.py [beatmap_id]")
+    if len(sys.argv) < 2:
+        print("Usage: python test_model.py [beatmap_id1] [beatmap_id2] ...")
     else:
-        beatmap_id = sys.argv[1]
-        main(beatmap_id)
+        beatmap_ids = sys.argv[1:]
+        results = get_json_predictions(["models"], beatmap_ids)
+        for beatmap_id, predictions in results.items():
+            print(f"Beatmap ID: {beatmap_id}")
+            for i, prediction in enumerate(predictions):
+                print(f"Model {i+1} predictions:")
+                print(prediction)
+            print()
