@@ -12,6 +12,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     command: python api.py
+    network_mode: bridge
+    restart: always
 
 volumes:
   app-data:
