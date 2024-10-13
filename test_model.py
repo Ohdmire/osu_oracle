@@ -50,7 +50,7 @@ def process_beatmap(beatmap_id, models, max_slider_length, max_time_diff, label_
     os.unlink(temp_file_path)
 
     if beatmap_data is None:
-        print(f"Invalid .osu file for beatmap ID {beatmap_id}")
+        print(f"Error processing beatmap ID {beatmap_id}: Unsupported mode or invalid file")
         return None
 
     json_predictions = []
@@ -94,6 +94,14 @@ def parse_osu_file(file_path, max_slider_length = 1, max_time_diff = 1, print_in
             if line.startswith('[') and line.endswith(']'):
                 section = line[1:-1]
                 continue
+
+            if section == 'General':
+                if line.startswith('Mode:'):
+                    mode = int(line.split(':')[1].strip())
+                    if mode != 0:
+                        print(f"Unsupported mode: {mode}. Only osu!standard mode (Mode: 0) is supported.")
+                        return None
+
 
             if section == 'Metadata':
                 key, value = line.split(':', maxsplit=1)
