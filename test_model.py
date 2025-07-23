@@ -3,13 +3,14 @@ import keras
 import numpy as np
 import os
 import pickle
-import requests
 import sys
 import tempfile
 import time
 import zipfile
 import concurrent.futures
 import threading
+import aiohttp
+import asyncio
 
 from keras.models import load_model
 from sklearn.preprocessing import LabelEncoder
@@ -26,19 +27,25 @@ if not os.path.exists('models'):
     with zipfile.ZipFile("models.zip", 'r') as zip_ref:
         zip_ref.extractall("models")
 
-def download_beatmap(beatmap_id):
+async def download_beatmap_async(beatmap_id):
     url = f"https://osu.direct/api/osu/{beatmap_id}"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
     }
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        print(f"Error fetching .osu file for beatmap ID {beatmap_id}: {response.status_code}")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    print(f"Error fetching .osu file for beatmap ID {beatmap_id}: {response.status}")
+                    return None
+                return await response.read()
+    except Exception as e:
+        print(f"Download error for beatmap {beatmap_id}: {str(e)}")
         return None
-    return response.content
 
-def process_beatmap(beatmap_id, models, max_slider_length, max_time_diff, label_encoder_path):
-    osu_file_content = download_beatmap(beatmap_id)
+
+async def process_beatmap_async(beatmap_id, models, max_slider_length, max_time_diff, label_encoder_path):
+    osu_file_content = await download_beatmap_async(beatmap_id)
     if osu_file_content is None:
         return None
 
@@ -215,43 +222,62 @@ def get_predictions_as_dict(beatmap_data, bagged_models, max_sequence_length, ma
     # Return the JSON object
     return json_predictions
 
-def get_json_predictions(folders, beatmap_ids):
+
+async def get_json_predictions_async(folders, beatmap_ids):
+    """获取预测结果的函数
+
+    参数:
+        folders: 包含模型的文件夹列表
+        beatmap_ids: 要预测的beatmap ID列表
+
+    返回:
+        包含预测结果的字典，格式为 {beatmap_id: [prediction1, prediction2, ...]}
+    """
+    # 加载模型
     models = []
     start = time.time()
     for folder in folders:
         model_folder = folder + "/"
         model_paths = [os.path.join(model_folder, f) for f in os.listdir(model_folder) if f.endswith('.h5')]
         model = [load_model(model_path, compile=False) for model_path in model_paths]
-        models.append(model) 
+        models.append(model)
     end = time.time()
     max_slider_length = 500.0
     max_time_diff = 1000
     label_encoder_path = model_folder + "label_encoder.pkl"
-    print(f"Loading Time: {round(end - start, 2)}s")
+    print(f"模型加载时间: {round(end - start, 2)}秒")
 
-    results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_beatmap = {executor.submit(process_beatmap, beatmap_id, models, max_slider_length, max_time_diff, label_encoder_path): beatmap_id for beatmap_id in beatmap_ids}
-        for future in concurrent.futures.as_completed(future_to_beatmap):
-            beatmap_id = future_to_beatmap[future]
-            try:
-                json_predictions = future.result()
-                if json_predictions:
-                    results[beatmap_id] = json_predictions
-            except Exception as exc:
-                print(f"Error processing beatmap {beatmap_id}: {exc}")
+    # 异步处理所有beatmap
+    tasks = []
+    for beatmap_id in beatmap_ids:
+        task = asyncio.create_task(
+            process_beatmap_async(beatmap_id, models, max_slider_length, max_time_diff, label_encoder_path)
+        )
+        tasks.append(task)
 
-    return results
+    # 等待所有任务完成
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-def main(beatmap_ids):
-    folders = ["models"]
-    results = get_json_predictions(folders, beatmap_ids)
-    for beatmap_id, predictions in results.items():
-        print(f"Beatmap ID: {beatmap_id}")
-        for i, prediction in enumerate(predictions):
-            print(f"Model {i+1} predictions:")
-            print(prediction)
-        print()
+    # 处理结果
+    final_results = {}
+    for beatmap_id, result in zip(beatmap_ids, results):
+        if isinstance(result, Exception):
+            print(f"处理beatmap {beatmap_id}时出错: {str(result)}")
+            final_results[beatmap_id] = None
+        elif result is not None:
+            final_results[beatmap_id] = result
+
+    return final_results
+
+# def main(beatmap_ids):
+#     folders = ["models"]
+#     results = get_json_predictions(folders, beatmap_ids)
+#     for beatmap_id, predictions in results.items():
+#         print(f"Beatmap ID: {beatmap_id}")
+#         for i, prediction in enumerate(predictions):
+#             print(f"Model {i+1} predictions:")
+#             print(prediction)
+#         print()
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

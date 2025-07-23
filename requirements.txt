@@ -3,10 +3,10 @@ Keras
 numpy
 tensorflow
 h5py
-requests
 scikit-learn
 matplotlib
 tensorflow-model-optimization
 joblib
 uvicorn
 fastapi
+aiohttp
