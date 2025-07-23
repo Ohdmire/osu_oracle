@@ -53,6 +53,32 @@ async def predict(request: PredictionRequest) -> Dict[str, Dict[str, float]]:
                 detail=f"预测出错: {str(e)}"
             )
 
+@app.post("/predict_unlimited")
+async def predict_unlimited(request: PredictionRequest) -> Dict[str, Dict[str, float]]:
+    """
+    功能与 /predict 完全相同，但没有速率限制
+    """
+    try:
+        if not request.beatmap_ids:
+            raise HTTPException(status_code=400, detail="至少需要一个有效的beatmap ID")
+
+        beatmap_ids = [str(id) for id in request.beatmap_ids]
+        results = await get_json_predictions_async(["models"], beatmap_ids)
+
+        formatted_results = {}
+        for beatmap_id, predictions in results.items():
+            merged_prediction = {}
+            for prediction in predictions:
+                merged_prediction.update(prediction)
+            formatted_results[beatmap_id] = merged_prediction
+
+        return formatted_results
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"无效的beatmap ID: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"预测出错: {str(e)}")
+
 if __name__ == "__main__":
     uvicorn.run(
         app,
