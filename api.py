@@ -58,5 +58,4 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=7777,
-        timeout_keep_alive=60
     )
