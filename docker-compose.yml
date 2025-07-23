@@ -5,14 +5,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "7777:7777"
+#    ports:
+#      - "7777:7777"
     volumes:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
     command: python api.py
-    network_mode: bridge
+    network_mode: host
     restart: always
 
 volumes:
