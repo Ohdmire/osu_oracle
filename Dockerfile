@@ -8,8 +8,10 @@ WORKDIR /app
 COPY requirements.txt .
 
 # 镜像
+RUN pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+
 # 安装项目依赖
-RUN pip install -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制项目文件到工作目录
 COPY . .
